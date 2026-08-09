@@ -1,0 +1,55 @@
+{
+  "name": "kenotex-mcp",
+  "version": "1.2.3",
+  "mcpName": "com.kenxcomp/kenotex-mcp",
+  "description": "MCP server for Kenotex ── expose local todo/event/habit/category/reminder CRUD + check-ins to any MCP-compatible LLM client (Claude Desktop, Cursor, Zed, OpenClaw, etc.)",
+  "type": "module",
+  "license": "MIT",
+  "author": "kenxcomp",
+  "homepage": "https://kenxcomp.com/kenotex/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kenxcomp/kenotex-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kenxcomp/kenotex-mcp/issues"
+  },
+  "bin": {
+    "kenotex-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target node --format esm && chmod +x ./dist/index.js",
+    "prepublishOnly": "bun run build",
+    "dev": "bun ./src/index.ts",
+    "test": "bun test",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.13",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "kenotex",
+    "todo",
+    "calendar",
+    "habit",
+    "check-in",
+    "claude",
+    "llm-tools"
+  ]
+}

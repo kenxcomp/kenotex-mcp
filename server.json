@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.kenxcomp/kenotex-mcp",
+  "description": "Let your coding agent manage real todos, calendar events, and check-in habits in Kenotex, a native macOS/iOS planner. Local SQLite, no cloud round-trip.",
+  "repository": {
+    "url": "https://github.com/kenxcomp/kenotex-mcp",
+    "source": "github"
+  },
+  "version": "1.2.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "kenotex-mcp",
+      "version": "1.2.3",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "KENOTEX_TOKEN",
+          "description": "Override the auto-discovered local API token. Normally unnecessary — the server finds it on disk.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "KENOTEX_HOST",
+          "description": "Override the local server address. Defaults to http://127.0.0.1:21519.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
