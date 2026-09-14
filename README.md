@@ -5,7 +5,7 @@
 [Kenotex](https://kenxcomp.com/kenotex/?ct=npm-mcp) is a native planner for Mac and iPhone.
 This package is its MCP server: point Claude Code, Claude Desktop, Cursor, Zed, or any MCP
 client at it, and the agent works on the actual items in the app — creating todos with
-categories and recurrence, scheduling calendar events, ticking off daily check-in habits.
+categories and recurrence, scheduling calendar events, ticking off daily or interval check-in habits.
 Not a scratchpad, not a markdown file. Everything lives in a local SQLite database on your
 own machine.
 
@@ -88,7 +88,19 @@ Same pattern: point the MCP config at `kenotex-mcp` as the `command`.
 
 **`create_todo` requires a `categoryId`** — todos can no longer be created uncategorized. The flow is: call `list_categories` and reuse a matching category's id; if none fits, call `create_category` and use the returned id, then `create_todo`.
 
-**Habits are daily check-in trackers** (medication, water, stretching), up to 6 dose times/day. Use `create_habit` for daily routines the user ticks off; use `create_todo` + recurrence for one-off or non-daily schedules. Writes take `times: ["HH:mm", …]`; reads return `times: [{id, time}]` — pass a slot's `id` as `slotId` to `set_habit_check` for a multi-dose habit (omit it to check all of today's doses). Checking is explicit **set-state** (`checked: true|false`, `date` defaults to today, idempotent, `false` un-checks). **`delete_habit` permanently deletes the habit and its entire check-in history** — set an `endDate` via `update_habit` to stop-but-keep-records instead. Habit tools require the Kenotex app release that ships `/v1/habits` (1.2.9+); against an older app they return an "update the Kenotex app" hint.
+**Habits are check-in trackers** (medication, water, stretching) — **daily** by default (up to 6 dose times/day), or **interval** (Q times every N days / N times a week / N times a month) via `cadence`. Use `create_habit` for routines the user ticks off; use `create_todo` + recurrence for one-off tasks or *fixed-slot* schedules (a particular weekday, a particular day of the month) — `cadence` counts how many times per period, recurrence pins which day. Writes take `times: ["HH:mm", …]`; reads return `times: [{id, time}]` — pass a slot's `id` as `slotId` to `set_habit_check` for a multi-dose habit (omit it to check all of today's doses). `cadence: {"unit":"day"|"week"|"month","interval":N,"quota"?:Q,"startDate"?:"yyyy-MM-dd"}` makes an interval habit — `quota` defaults to 1, out-of-range is a 422 and is never clamped, `startDate` defaults to today and can never be changed afterwards, and an interval habit takes at most one dose time:
+
+| `unit` | `interval` | `quota` | period |
+|---|---|---|---|
+| `day` | 1–365 | 1–`interval` | N calendar days, so `quota ≤ N`; `day/1` takes quota 1 = explicitly daily |
+| `week` | 1–8 | 1–7×`interval` | N week(s) |
+| `month` | 1–12 | 1–min(31×`interval`, 365) | N whole **calendar** months (1st → last day), so the due day is always month end and the period's length follows the calendar rather than a fixed 30 days |
+
+Examples: `{"unit":"day","interval":3}` = every 3 days · `{"unit":"day","interval":5,"quota":2}` = twice every 5 days · `{"unit":"week","interval":1,"quota":2}` = twice a week · `{"unit":"month","interval":1,"quota":2}` = twice a month.
+
+Reads add `cadence`, `isIntervalHabit` and `currentPeriod {start,end,dueDay,doneCount,quota,done}` — use `currentPeriod.done` for "is this period satisfied" (`checkedToday` stays a calendar-day fact). `update_habit {"cadence": null}` turns an interval habit back into a daily one (anchor kept). Interval habits are checked per calendar day (no `slotId`; `date` never in the future). Checking is explicit **set-state** (`checked: true|false`, `date` defaults to today, idempotent, `false` un-checks). **`delete_habit` permanently deletes the habit and its entire check-in history** — set an `endDate` via `update_habit` to stop-but-keep-records instead.
+
+**App version**: habit tools require the Kenotex app release that ships `/v1/habits` (1.2.9+, local API v2). `cadence` additionally requires the release that advertises local API **v3** — against an older app a `cadence` write is refused up front with `VERSION_SKEW` rather than being silently ignored, and once the app is updated you just retry (the check re-reads the running app's version, no MCP restart needed). **Nothing else is gated**: on a v2 app every other tool, habit tools included, behaves exactly as it did before — only `cadence` is unavailable.
 
 **Recurrence DSL**: `'daily'` / `'weekly:mon,wed,fri'` / `'monthly:15'` / `'yearly'` / `'after:daily'` (todos only) / `'none'`.
 

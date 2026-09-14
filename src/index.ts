@@ -55,9 +55,16 @@ async function main(): Promise<void> {
         "             Tools will fail until the Kenotex macOS app is running.\n",
     );
   } else {
-    const skew = client.versionSkewHint();
-    if (skew) {
-      process.stderr.write(`[kenotex-mcp] Version skew: ${skew}\n`);
+    // Two directions, two severities. A MCP this app refuses outright is a real
+    // skew warning; an app one additive version behind is a note, not a defect —
+    // it only means `cadence` is unavailable, so it must not read as "your setup
+    // is broken, go update".
+    const outdated = client.clientTooOldHint();
+    if (outdated) {
+      process.stderr.write(`[kenotex-mcp] Version skew: ${outdated}\n`);
+    } else {
+      const behind = client.appBehindHint();
+      if (behind) process.stderr.write(`[kenotex-mcp] ${behind}\n`);
     }
   }
 

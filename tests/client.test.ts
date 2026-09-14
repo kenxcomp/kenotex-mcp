@@ -122,12 +122,18 @@ describe("KenotexClient", () => {
 });
 
 describe("API version handshake", () => {
-  test("health() caches app apiVersion → skew hint says update the app when app is older", async () => {
+  test("health() caches app apiVersion → an app one version behind gets a SOFT note", async () => {
     mockHealthAnd404({ apiVersion: CLIENT_API_VERSION - 1, minClientApiVersion: 1 });
     const client = new KenotexClient({ token: "t" });
     await client.health();
     const hint = client.versionSkewHint();
-    expect(hint).toMatch(/update the Kenotex macOS app/i);
+    // The v2 → v3 step is additive, so the note must name the ONE thing that is
+    // unavailable, say the rest still works, and make the update conditional.
+    // An unconditional "update the app" reaches users of a current app as an
+    // instruction they cannot act on until the matching app release ships.
+    expect(hint).toMatch(/cadence/i);
+    expect(hint).toMatch(/every other tool works/i);
+    expect(hint).toMatch(/only if the user wants interval habits/i);
   });
 
   test("matching versions produce no skew hint", async () => {
@@ -231,5 +237,200 @@ describe("API version handshake", () => {
       expect(e.message).toMatch(/update the Kenotex macOS app/i);
     }
     expect(healthCalls).toBe(2); // re-probed after the failed boot probe
+  });
+});
+
+/**
+ * kenotex-mcp targeting API v3 reaches npm before (or alongside) the Kenotex app
+ * release that advertises v3, so for a while EVERY installed app reports v2.
+ * That has to stay a non-event: `cadence` is the only thing unavailable, and an
+ * unrelated not-found must not come back carrying "update the Kenotex app" —
+ * the LLM relays that to a user who has no such update to install.
+ */
+describe("v3 client against a v2 app (client shipped ahead of the app release)", () => {
+  const V2 = { apiVersion: 2, minClientApiVersion: 1 };
+
+  test("404 on a non-habit route stays a plain not-found, verbatim", async () => {
+    (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
+      if (url.endsWith("/health")) {
+        return new Response(JSON.stringify({ status: "ok", ...V2 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: { message: "Todo not found" } }), {
+        status: 404,
+      });
+    });
+    const client = new KenotexClient({ token: "t" });
+    await client.health(); // app version is known and lower than ours
+    try {
+      await client.request("GET", "/v1/todos/nope");
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      if (!(e instanceof KenotexClientError)) throw e;
+      expect(e.code).toBe("NOT_FOUND");
+      expect(e.message).toBe("Todo not found"); // nothing appended at all
+      expect(e.message).not.toMatch(/update the Kenotex/i);
+      expect(e.message).not.toMatch(/cadence/i);
+    }
+  });
+
+  test("404 on /v1/habits still carries the version note (the scope boundary, other side)", async () => {
+    mockHealthAnd404(V2);
+    const client = new KenotexClient({ token: "t" });
+    try {
+      await client.request("GET", "/v1/habits/nope");
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      if (!(e instanceof KenotexClientError)) throw e;
+      expect(e.code).toBe("NOT_FOUND");
+      expect(e.message).toMatch(/cadence/i);
+      expect(e.message).toMatch(/local API v2/);
+    }
+  });
+
+  test("the narrowing does not swallow the other direction: an outdated MCP is still flagged everywhere", async () => {
+    // A MCP the app refuses outright breaks every route, not one feature, so
+    // that hint stays unscoped — including on a plain /v1/todos 404.
+    mockHealthAnd404({
+      apiVersion: CLIENT_API_VERSION + 1,
+      minClientApiVersion: CLIENT_API_VERSION + 1,
+    });
+    const client = new KenotexClient({ token: "t" });
+    try {
+      await client.request("GET", "/v1/todos/nope");
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      if (!(e instanceof KenotexClientError)) throw e;
+      expect(e.message).toMatch(/npx kenotex-mcp@latest/);
+    }
+  });
+});
+
+describe("requireApiVersion (success-path guard for field-level features)", () => {
+  test("resolves when the app meets the minimum", async () => {
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+  });
+
+  test("throws VERSION_SKEW naming the feature when the app is older", async () => {
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION - 1, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    try {
+      await client.requireApiVersion(CLIENT_API_VERSION, "habit cadence");
+      expect.unreachable();
+    } catch (e) {
+      if (!(e instanceof KenotexClientError)) throw e;
+      expect(e.code).toBe("VERSION_SKEW");
+      expect(e.message).toContain("habit cadence");
+      expect(e.message).toMatch(/update the Kenotex macOS app/i);
+      expect(e.message).toMatch(/NOT sent/);
+    }
+  });
+
+  test("throws for a reachable app that advertises no version at all", async () => {
+    mockHealthAnd404({});
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(2, "x")).rejects.toMatchObject({ code: "VERSION_SKEW" });
+  });
+
+  test("passes when the app is unreachable (version unknown) — the request fails on its own", async () => {
+    (globalThis as Record<string, unknown>).fetch = mock(async () => {
+      throw new Error("connection refused");
+    });
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+  });
+
+  test("probes /health lazily and only once", async () => {
+    let healthCalls = 0;
+    (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
+      if (url.endsWith("/health")) healthCalls += 1;
+      return new Response(JSON.stringify({ status: "ok", apiVersion: CLIENT_API_VERSION }), { status: 200 });
+    });
+    const client = new KenotexClient({ token: "t" });
+    await client.requireApiVersion(CLIENT_API_VERSION, "x");
+    await client.requireApiVersion(CLIENT_API_VERSION, "x");
+    expect(healthCalls).toBe(1);
+  });
+
+  test("app updated mid-session: the guard re-probes and stops refusing (no MCP restart)", async () => {
+    // The whole point of VERSION_SKEW is to tell the user to update the app. If the
+    // boot-time version stayed cached for the life of the process, the retry after
+    // that update would keep being refused until the MCP restarted.
+    let appApiVersion = CLIENT_API_VERSION - 1;
+    let healthCalls = 0;
+    (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
+      if (url.endsWith("/health")) {
+        healthCalls += 1;
+        return new Response(
+          JSON.stringify({ status: "ok", apiVersion: appApiVersion, minClientApiVersion: 1 }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const client = new KenotexClient({ token: "t" });
+    expect(await client.health()).toBe(true); // boot probe caches the old version
+    await expect(
+      client.requireApiVersion(CLIENT_API_VERSION, "habit cadence"),
+    ).rejects.toMatchObject({ code: "VERSION_SKEW" });
+
+    appApiVersion = CLIENT_API_VERSION; // user updates the Kenotex app, same MCP process
+    await expect(
+      client.requireApiVersion(CLIENT_API_VERSION, "habit cadence"),
+    ).resolves.toBeUndefined();
+
+    // …and once the cache is satisfied again, the guard stops touching /health.
+    const afterRefresh = healthCalls;
+    await client.requireApiVersion(CLIENT_API_VERSION, "habit cadence");
+    expect(healthCalls).toBe(afterRefresh);
+  });
+
+  test("legacy versionless app that gets updated is unblocked by the same re-probe", async () => {
+    let health: Record<string, unknown> = {}; // reachable, advertises no version
+    (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
+      if (url.endsWith("/health")) {
+        return new Response(JSON.stringify({ status: "ok", ...health }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const client = new KenotexClient({ token: "t" });
+    await client.health();
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).rejects.toMatchObject({
+      code: "VERSION_SKEW",
+    });
+    health = { apiVersion: CLIENT_API_VERSION, minClientApiVersion: 1 };
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+  });
+
+  test("a failed re-probe changes nothing: the same VERSION_SKEW is thrown", async () => {
+    // App was v2 at boot and is unreachable when the guard re-checks (e.g. it is
+    // mid-restart). The stale-but-only answer stands — error code and text unchanged.
+    let healthCalls = 0;
+    (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
+      if (url.endsWith("/health")) {
+        healthCalls += 1;
+        if (healthCalls > 1) throw new Error("connection refused");
+        return new Response(
+          JSON.stringify({ status: "ok", apiVersion: CLIENT_API_VERSION - 1 }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const client = new KenotexClient({ token: "t" });
+    await client.health();
+    try {
+      await client.requireApiVersion(CLIENT_API_VERSION, "habit cadence");
+      expect.unreachable();
+    } catch (e) {
+      if (!(e instanceof KenotexClientError)) throw e;
+      expect(e.code).toBe("VERSION_SKEW");
+      expect(e.message).toContain("habit cadence");
+      expect(e.message).toContain(`local API v${CLIENT_API_VERSION - 1}`);
+      expect(e.message).toMatch(/NOT sent/);
+      expect(e.message).toMatch(/update the Kenotex macOS app/i);
+    }
+    expect(healthCalls).toBe(2); // one refresh attempt, then the cached verdict
   });
 });
