@@ -114,6 +114,11 @@ export class KenotexClient {
         signal: AbortSignal.timeout(2000),
       });
       if (res.status === 200) {
+        // Replace, never retain: this process is long-lived and the app under it can be
+        // downgraded or swapped for a build whose /health carries no version fields at
+        // all. A stale v3 left in the cache would keep `requireApiVersion()` satisfied.
+        this.appApiVersion = undefined;
+        this.appMinClientApiVersion = undefined;
         try {
           const body = (await res.json()) as {
             apiVersion?: number;
@@ -225,23 +230,17 @@ export class KenotexClient {
    * `minApiVersion` (advertised `apiVersion` below it, or a reachable app that
    * advertises no version at all). An unreachable app (version unknown) passes —
    * the request then fails with its normal connection error.
-   * Before refusing, the app version is re-probed once: the user's fix for a
-   * VERSION_SKEW is to update the app, and the cached version would otherwise
-   * outlive that update and keep rejecting every write until the MCP restarts.
-   * Only this refusal path pays for the extra `/health` — a satisfied guard never
-   * re-reads it. */
+   * `/health` is re-probed on EVERY call, in both directions: this process is
+   * long-lived and the app underneath it can be updated (the user's fix for a
+   * VERSION_SKEW) *or* replaced / downgraded to a pre-v3 build, which would accept
+   * the write and silently drop the field. One local GET per field-sensitive write
+   * is cheap; a cached verdict that outlives an app swap is not. A re-probe that
+   * cannot reach the app leaves the cache untouched, so the verdict then stays
+   * whatever the last successful probe said (an app that is down is still never
+   * "too old" unless it was positively known to be). */
   async requireApiVersion(minApiVersion: number, feature: string): Promise<void> {
-    const probedNow = await this.ensureVersions();
+    await this.health();
     if (!this.isKnownOlderThan(minApiVersion)) return;
-    // Cache says "too old". Re-check against the app that is running *now* (unless
-    // ensureVersions() just probed, in which case it already is current). A failed
-    // re-probe leaves the cache untouched, so an app that is down stays refused
-    // with exactly the error below — the semantics only change when the app has
-    // genuinely been updated in the meantime.
-    if (!probedNow) {
-      await this.health();
-      if (!this.isKnownOlderThan(minApiVersion)) return;
-    }
     const known = this.appApiVersion;
     const reported = known !== undefined ? `local API v${known}` : "no local API version at all";
     throw new KenotexClientError(

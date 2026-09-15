@@ -1,6 +1,6 @@
 {
   "name": "kenotex-mcp",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "mcpName": "com.kenxcomp/kenotex-mcp",
   "description": "MCP server for Kenotex ── expose local todo/event/habit/category/reminder CRUD + check-ins to any MCP-compatible LLM client (Claude Desktop, Cursor, Zed, OpenClaw, etc.)",
   "type": "module",

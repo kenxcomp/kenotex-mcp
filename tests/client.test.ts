@@ -333,6 +333,35 @@ describe("requireApiVersion (success-path guard for field-level features)", () =
     await expect(client.requireApiVersion(2, "x")).rejects.toMatchObject({ code: "VERSION_SKEW" });
   });
 
+  test("re-probes before every gated write: an app downgraded under a long-lived process is refused", async () => {
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+    // The user swaps the running app for an older build while this process lives on.
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION - 1, minClientApiVersion: 1 });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).rejects.toMatchObject({
+      code: "VERSION_SKEW",
+    });
+  });
+
+  test("a successful probe replaces stale version fields: v3 cached, then a versionless /health is legacy again", async () => {
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(2, "x")).resolves.toBeUndefined();
+    mockHealthAnd404({});
+    await expect(client.requireApiVersion(2, "x")).rejects.toMatchObject({ code: "VERSION_SKEW" });
+  });
+
+  test("a failed re-probe keeps the last known verdict: cached v3 and an app that is down still passes", async () => {
+    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+    (globalThis as Record<string, unknown>).fetch = mock(async () => {
+      throw new Error("connection refused");
+    });
+    await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
+  });
+
   test("passes when the app is unreachable (version unknown) — the request fails on its own", async () => {
     (globalThis as Record<string, unknown>).fetch = mock(async () => {
       throw new Error("connection refused");
@@ -341,7 +370,9 @@ describe("requireApiVersion (success-path guard for field-level features)", () =
     await expect(client.requireApiVersion(CLIENT_API_VERSION, "x")).resolves.toBeUndefined();
   });
 
-  test("probes /health lazily and only once", async () => {
+  test("probes /health on every gated write — a satisfied verdict is never trusted across calls", async () => {
+    // 1.3.0 probed once and trusted the cache for the life of the process; that let a
+    // downgraded app silently drop `cadence`. One local GET per gated write is the price.
     let healthCalls = 0;
     (globalThis as Record<string, unknown>).fetch = mock(async (url: string) => {
       if (url.endsWith("/health")) healthCalls += 1;
@@ -350,7 +381,7 @@ describe("requireApiVersion (success-path guard for field-level features)", () =
     const client = new KenotexClient({ token: "t" });
     await client.requireApiVersion(CLIENT_API_VERSION, "x");
     await client.requireApiVersion(CLIENT_API_VERSION, "x");
-    expect(healthCalls).toBe(1);
+    expect(healthCalls).toBe(2);
   });
 
   test("app updated mid-session: the guard re-probes and stops refusing (no MCP restart)", async () => {
@@ -380,10 +411,11 @@ describe("requireApiVersion (success-path guard for field-level features)", () =
       client.requireApiVersion(CLIENT_API_VERSION, "habit cadence"),
     ).resolves.toBeUndefined();
 
-    // …and once the cache is satisfied again, the guard stops touching /health.
+    // …and a satisfied verdict is re-checked on the next gated write too (1.3.1): the
+    // app can be swapped back for an older build just as easily as it was updated.
     const afterRefresh = healthCalls;
     await client.requireApiVersion(CLIENT_API_VERSION, "habit cadence");
-    expect(healthCalls).toBe(afterRefresh);
+    expect(healthCalls).toBe(afterRefresh + 1);
   });
 
   test("legacy versionless app that gets updated is unblocked by the same re-probe", async () => {
