@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [1.4.0] - 2026-10-29
+
+- **Daily habit start date (local API v4).** A daily cadence with a future start — `{"unit":"day","interval":1,"startDate":"<future yyyy-MM-dd>"}` — creates a daily habit that starts that day: until then it cannot be checked (`set_habit_check` → 422 on `date`), is not due, and sends no reminders. Habit reads gain `isStarted` (false only while that start is in the future). Tool descriptions on `create_habit`, `list_habits`, `get_habit` and `set_habit_check` say so.
+- **`CLIENT_API_VERSION` 3 → 4**, in lock-step with the app's `LocalHTTPServer.apiVersion`. The app's `minClientApiVersion` stays 1 — the change is additive.
+- **New `VERSION_SKEW` pre-flight for a daily start date.** A v3 app accepts a daily cadence that carries a `startDate`, stores it, and starts the habit today anyway — the write would silently do the wrong thing. `create_habit` / `update_habit` with a daily cadence (`unit:"day"`, `interval:1`, quota 1 or omitted) **and** a `startDate` are now refused with `VERSION_SKEW` unless the running app advertises API v4+. Every other `cadence` write (interval habits, daily without `startDate`, `cadence: null`) still needs only v3.
+- **The "app is behind" note now names only what the running app lacks.** Against a v3 app it mentions the daily start date / `isStarted` (needs v4+) and no longer claims `cadence` is missing; against a v2 app it names both. The versionless-app hint now says such an app predates API v2 (the version that added habits).
+
 ## [1.3.1] - 2026-09-14
 
 - **`VERSION_SKEW` pre-flight re-probes `/health` before every `cadence` write.** 1.3.0 only re-checked when the cached version was *too old*; a satisfied cache (API v3) was trusted for the life of the process, so if the user replaced or downgraded the running app to a pre-v3 build, `create_habit` / `update_habit` still sent `cadence`, the older app dropped the field and answered 2xx, and a plain daily habit was silently created or edited. The guard now asks the running app on every gated write (one local GET), and a successful probe **replaces** the cached version fields instead of retaining them — an app whose `/health` no longer advertises a version is treated as legacy again. A re-probe that cannot reach the app keeps the last known verdict, so an app that is merely down fails with its normal connection error as before.

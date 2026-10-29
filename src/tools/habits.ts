@@ -1,6 +1,9 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { KenotexClient } from "../client.js";
-import { HABIT_CADENCE_MIN_API_VERSION } from "../client.js";
+import {
+  HABIT_CADENCE_MIN_API_VERSION,
+  HABIT_DAILY_START_MIN_API_VERSION,
+} from "../client.js";
 import { pathSegmentId } from "../ids.js";
 
 /** JSON schema for a habit's interval `cadence` — shared by create_habit / update_habit.
@@ -27,7 +30,7 @@ const cadenceProperties = {
   startDate: {
     type: "string",
     description:
-      'Period anchor "yyyy-MM-dd". Defaults to today on create; on update it defaults to the habit\'s existing anchor. IMMUTABLE once set — sending a different date is a 422 on cadence.startDate (moving it would shift every past period boundary).',
+      'Period anchor "yyyy-MM-dd". Defaults to today on create; on update it defaults to the habit\'s existing anchor. On a daily cadence (day/1/1) a future date is the habit\'s first day — it starts then (local API v4+). IMMUTABLE once set — sending a different date is a 422 on cadence.startDate (moving it would shift every past period boundary).',
   },
 };
 
@@ -68,7 +71,7 @@ export function habitTools(client: KenotexClient): {
             properties: cadenceProperties,
             required: ["unit", "interval"],
             description:
-              'Interval cadence, e.g. {"unit":"day","interval":3} = every 3 days, {"unit":"day","interval":5,"quota":2} = twice every 5 days, {"unit":"week","interval":1,"quota":2} = twice a week, {"unit":"month","interval":1,"quota":2} = twice a month. Omit for a daily habit. Accepted: day interval 1–365 with quota 1–interval (day/1 with quota 1 = explicitly daily); week interval 1–8 with quota 1–7×interval; month interval 1–12 with quota 1–min(31×interval, 365) — anything else is a 422 on cadence, never clamped. A month period is a calendar month (1st → month end), so its due day is the last day of the month. `startDate` (default today) anchors the periods and can never be changed later. Needs Kenotex local API v3+: against an older app this tool refuses with VERSION_SKEW instead of letting the field be silently ignored.',
+              'Interval cadence, e.g. {"unit":"day","interval":3} = every 3 days, {"unit":"day","interval":5,"quota":2} = twice every 5 days, {"unit":"week","interval":1,"quota":2} = twice a week, {"unit":"month","interval":1,"quota":2} = twice a month. Omit for a daily habit; {"unit":"day","interval":1,"startDate":"<future yyyy-MM-dd>"} = a daily habit that starts that day (no check-ins before it; needs local API v4+, a v3 app starts it right away). Accepted: day interval 1–365 with quota 1–interval (day/1 with quota 1 = explicitly daily); week interval 1–8 with quota 1–7×interval; month interval 1–12 with quota 1–min(31×interval, 365) — anything else is a 422 on cadence, never clamped. A month period is a calendar month (1st → month end), so its due day is the last day of the month. `startDate` (default today) anchors the periods and can never be changed later. Needs Kenotex local API v3+: against an older app this tool refuses with VERSION_SKEW instead of letting the field be silently ignored.',
           },
         },
         required: ["title"],
@@ -77,13 +80,13 @@ export function habitTools(client: KenotexClient): {
     {
       name: "list_habits",
       description:
-        "List all check-in habits with computed fields (doseCount, isMultiDose, times incl. stable slot ids, endDate, remindersEnabled, currentStreak, checkedToday, todayDoneCount, plus cadence / isIntervalHabit / currentPeriod {start,end,dueDay,doneCount,quota,done} — currentPeriod is null for daily habits). Answers 'did I check in today?' / 'what's my streak?' / 'am I done for this period?' (read currentPeriod.done — checkedToday only says whether TODAY was ticked). Call this (or get_habit) to discover slot ids before set_habit_check on a multi-dose habit.",
+        "List all check-in habits with computed fields (doseCount, isMultiDose, times incl. stable slot ids, endDate, remindersEnabled, currentStreak, checkedToday, todayDoneCount, plus cadence / isIntervalHabit / currentPeriod {start,end,dueDay,doneCount,quota,done} — currentPeriod is null for daily habits — and isStarted: false while a daily habit's future start date has not arrived). Answers 'did I check in today?' / 'what's my streak?' / 'am I done for this period?' (read currentPeriod.done — checkedToday only says whether TODAY was ticked). Call this (or get_habit) to discover slot ids before set_habit_check on a multi-dose habit.",
       inputSchema: { type: "object", properties: {} },
     },
     {
       name: "get_habit",
       description:
-        "Fetch a specific habit by id. `times` returns as [{id, time}] objects — pass a slot's `id` as `slotId` when checking a dose of a multi-dose habit. Interval habits also carry `cadence` and `currentPeriod` ({start,end,dueDay,doneCount,quota,done}) — use `currentPeriod.done` for 'is this period satisfied'.",
+        "Fetch a specific habit by id. `times` returns as [{id, time}] objects — pass a slot's `id` as `slotId` when checking a dose of a multi-dose habit. Interval habits also carry `cadence` and `currentPeriod` ({start,end,dueDay,doneCount,quota,done}) — use `currentPeriod.done` for 'is this period satisfied'. `isStarted` is false until a daily habit's future start date (cadence.startDate) arrives.",
       inputSchema: {
         type: "object",
         properties: { id: { type: "string" } },
@@ -119,7 +122,7 @@ export function habitTools(client: KenotexClient): {
     {
       name: "set_habit_check",
       description:
-        "Set a habit's check state for a date: checked=true marks it done, checked=false removes the check. Idempotent — safe to repeat. `date` defaults to today when omitted (only pass a date to back-fill a past day). Single-dose habits take NO slotId. Multi-dose habits: pass a `slotId` (a times[].id from get_habit / list_habits) to check one dose, or omit it to check ALL of today's doses at once. INTERVAL habits (cadence) are checked per calendar day: no slotId; `date` must be a checkable day — from the cadence startDate up to today (or endDate if earlier), never in the future (422 on date). The response's doneCount / fullyDone are calendar-day facts — for 'is this period satisfied' read currentPeriod.done from get_habit.",
+        "Set a habit's check state for a date: checked=true marks it done, checked=false removes the check. Idempotent — safe to repeat. `date` defaults to today when omitted (only pass a date to back-fill a past day). Single-dose habits take NO slotId. Multi-dose habits: pass a `slotId` (a times[].id from get_habit / list_habits) to check one dose, or omit it to check ALL of today's doses at once. INTERVAL habits (cadence) are checked per calendar day: no slotId; `date` must be a checkable day — from the cadence startDate up to today (or endDate if earlier), never in the future (422 on date). A daily habit with a future start date (isStarted:false) cannot be checked before that day (422 on date). The response's doneCount / fullyDone are calendar-day facts — for 'is this period satisfied' read currentPeriod.done from get_habit.",
       inputSchema: {
         type: "object",
         properties: {
@@ -171,13 +174,33 @@ export function habitTools(client: KenotexClient): {
    * accepts the write and silently drops the field (201, daily habit). Refuse
    * before sending when the app is known to be too old; `cadence: null` counts
    * too (it is a v3 write). Requests without the key are never gated. */
-  const guardCadence = (body: Record<string, unknown>): Promise<void> =>
-    "cadence" in body
-      ? client.requireApiVersion(
-          HABIT_CADENCE_MIN_API_VERSION,
-          "habit `cadence` (interval habits)",
-        )
-      : Promise.resolve();
+  // A daily cadence (`day`, interval 1, quota 1/omitted) carrying a `startDate` is
+  // a first-day anchor: a v3 app stores it but starts the habit today, so it needs v4.
+  const isDailyStartCadence = (cadence: unknown): boolean => {
+    if (!cadence || typeof cadence !== "object") return false;
+    const c = cadence as Record<string, unknown>;
+    return (
+      c.unit === "day" &&
+      c.interval === 1 &&
+      (c.quota === undefined || c.quota === 1) &&
+      typeof c.startDate === "string" &&
+      c.startDate.length > 0
+    );
+  };
+
+  const guardCadence = async (body: Record<string, unknown>): Promise<void> => {
+    if (!("cadence" in body)) return;
+    await client.requireApiVersion(
+      HABIT_CADENCE_MIN_API_VERSION,
+      "habit `cadence` (interval habits)",
+    );
+    if (isDailyStartCadence(body.cadence)) {
+      await client.requireApiVersion(
+        HABIT_DAILY_START_MIN_API_VERSION,
+        "a daily habit's start date (daily `cadence` with `startDate`)",
+      );
+    }
+  };
 
   const handlers: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
     create_habit: async (args) => {

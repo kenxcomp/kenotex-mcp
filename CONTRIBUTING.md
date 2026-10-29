@@ -27,9 +27,9 @@ bun run build
 bun test
 ```
 
-`tests/client.test.ts` reaches for the real token-discovery paths and can fail
-on a machine with Kenotex installed. That is a known defect in the test, not in
-the client.
+`tests/client.test.ts` isolates token discovery in a temporary fixture directory
+and mocks HTTP requests, so it does not read installed-app tokens or require a
+running Kenotex app.
 
 ## Scope
 

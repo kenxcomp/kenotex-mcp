@@ -13,8 +13,12 @@ export const DEFAULT_HOST = "http://127.0.0.1:21519";
  * depend on new routes. v2 (2026-07-06): check-in habit tools + `/v1/habits`.
  * v3 (2026-09-13): habit `cadence` (interval habits) on `POST`/`PATCH /v1/habits`,
  * plus `cadence` / `isIntervalHabit` / `currentPeriod` on every habit response.
+ * v4 (2026-10-14): a daily habit's first-day anchor — an explicit daily cadence
+ * (`day/1/1`) with a future `startDate` starts the habit that day (earlier
+ * `PUT .../checks` → 422 on `date`), plus `isStarted` on every habit response.
+ * Additive: the app's `minClientApiVersion` stays 1.
  */
-export const CLIENT_API_VERSION = 3;
+export const CLIENT_API_VERSION = 4;
 
 /**
  * First local-API version whose `/v1/habits` understands `cadence`. A pre-v3 app
@@ -23,6 +27,38 @@ export const CLIENT_API_VERSION = 3;
  * client-side via `requireApiVersion` when the app is known to be older.
  */
 export const HABIT_CADENCE_MIN_API_VERSION = 3;
+
+/**
+ * First local-API version that honours an explicit daily cadence's `startDate`
+ * (`{unit:"day", interval:1, startDate}`) as the habit's first day. A v3 app
+ * stores the anchor but ignores it — the habit silently starts today — so such
+ * writes are refused client-side against an app known to be older.
+ */
+export const HABIT_DAILY_START_MIN_API_VERSION = 4;
+
+/**
+ * What an app below each local-API version cannot do, for the soft "app is
+ * behind" note. Each entry names only the feature that version introduced, so an
+ * app one version behind is never told it lacks something it already has (a v3
+ * app does `cadence`; it only lacks the v4 daily start date).
+ */
+const VERSION_GATED_HABIT_FEATURES: ReadonlyArray<{
+  minApiVersion: number;
+  feature: string;
+  wants: string;
+}> = [
+  {
+    minApiVersion: HABIT_CADENCE_MIN_API_VERSION,
+    feature: "habit `cadence` (interval habits)",
+    wants: "interval habits",
+  },
+  {
+    minApiVersion: HABIT_DAILY_START_MIN_API_VERSION,
+    feature:
+      "a daily habit's future start date (a daily `cadence` with a later `startDate`, the `isStarted` read field)",
+    wants: "a daily habit that starts on a later date",
+  },
+];
 
 /**
  * Token file locations searched, in priority order.
@@ -184,8 +220,9 @@ export class KenotexClient {
 
   /** Hint for the opposite direction: the app advertises a LOWER `apiVersion`
    * than this build targets. Deliberately NOT phrased as "you must update the
-   * app": the v2 → v3 step is additive, so the only thing a v2 app cannot do is
-   * habit `cadence`. Every other tool works against it exactly as before, and
+   * app": every step since v2 is additive, so the note names only the habit
+   * features introduced after the app's version (`VERSION_GATED_HABIT_FEATURES`:
+   * v3 `cadence`, v4 daily start date). Every other tool works against it exactly as before, and
    * this build ships ahead of the app release on purpose — telling every user of
    * a current app to go install an update that does not exist yet is noise, not
    * a diagnosis. Scoped by the caller to the routes where it is actually
@@ -196,11 +233,17 @@ export class KenotexClient {
       this.appApiVersion !== undefined &&
       this.appApiVersion < CLIENT_API_VERSION
     ) {
+      const app = this.appApiVersion;
+      const missing = VERSION_GATED_HABIT_FEATURES.filter((f) => app < f.minApiVersion);
+      // Nothing this build knows of is missing (a bump without a table entry): no note.
+      if (missing.length === 0) return undefined;
+      const needs = missing.map((f) => `${f.feature} needs v${f.minApiVersion}+`).join("; ");
+      const wants = missing.map((f) => f.wants).join(" or ");
       return (
-        `Version note: the Kenotex app reports local API v${this.appApiVersion}, while this kenotex-mcp ` +
-        `build targets v${CLIENT_API_VERSION}. Only habit \`cadence\` (interval habits) needs v${HABIT_CADENCE_MIN_API_VERSION}+ — ` +
+        `Version note: the Kenotex app reports local API v${app}, while this kenotex-mcp ` +
+        `build targets v${CLIENT_API_VERSION}. Only ${needs} — ` +
         `every other tool works against this app as usual. ` +
-        `Update the Kenotex macOS app only if the user wants interval habits.`
+        `Update the Kenotex macOS app only if the user wants ${wants}.`
       );
     }
     return undefined;
@@ -217,7 +260,7 @@ export class KenotexClient {
   private legacyAppTooOldHint(): string {
     return (
       `The Kenotex app is too old to support check-in habits ` +
-      `(its /health advertises no local API version, so it predates API v${CLIENT_API_VERSION}). ` +
+      `(its /health advertises no local API version, so it predates API v2, which added habits). ` +
       `Ask the user to update the Kenotex macOS app to the latest version, then retry.`
     );
   }

@@ -1,5 +1,8 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
-import { KenotexClient, KenotexClientError, CLIENT_API_VERSION } from "../src/client.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { KenotexClient, KenotexClientError, CLIENT_API_VERSION, TOKEN_PATHS } from "../src/client.js";
 
 /** Mock fetch that answers /health with the given version fields and every
  * other request with a 404 (simulating a missing / version-skewed endpoint). */
@@ -33,13 +36,19 @@ describe("KenotexClient", () => {
   });
 
   test("throws TOKEN_NOT_FOUND when no token sources available", async () => {
-    const client = new KenotexClient({ host: "http://127.0.0.1:21519" });
+    const fixture = mkdtempSync(join(tmpdir(), "kenotex-mcp-token-test-"));
+    const originalPaths = TOKEN_PATHS.splice(0, TOKEN_PATHS.length, join(fixture, "missing-token"));
+    // An explicit empty token prevents a developer's environment from supplying one.
+    const client = new KenotexClient({ host: "http://127.0.0.1:21519", token: "" });
     try {
       await client.request("GET", "/v1/todos");
       expect.unreachable("should have thrown");
     } catch (e) {
       if (!(e instanceof KenotexClientError)) throw e;
       expect(e.code).toBe("TOKEN_NOT_FOUND");
+    } finally {
+      TOKEN_PATHS.splice(0, TOKEN_PATHS.length, ...originalPaths);
+      rmSync(fixture, { recursive: true });
     }
   });
 
@@ -123,17 +132,34 @@ describe("KenotexClient", () => {
 
 describe("API version handshake", () => {
   test("health() caches app apiVersion → an app one version behind gets a SOFT note", async () => {
-    mockHealthAnd404({ apiVersion: CLIENT_API_VERSION - 1, minClientApiVersion: 1 });
+    // v3 app, v4 client: the v3 → v4 step is additive, so the note must name the
+    // ONE thing that is unavailable (the daily start date), say the rest still
+    // works, and make the update conditional. An unconditional "update the app"
+    // reaches users of a current app as an instruction they cannot act on until
+    // the matching app release ships.
+    mockHealthAnd404({ apiVersion: 3, minClientApiVersion: 1 });
     const client = new KenotexClient({ token: "t" });
     await client.health();
     const hint = client.versionSkewHint();
-    // The v2 → v3 step is additive, so the note must name the ONE thing that is
-    // unavailable, say the rest still works, and make the update conditional.
-    // An unconditional "update the app" reaches users of a current app as an
-    // instruction they cannot act on until the matching app release ships.
-    expect(hint).toMatch(/cadence/i);
+    expect(hint).toMatch(/start date/i);
+    expect(hint).toMatch(/isStarted/);
+    expect(hint).toMatch(/needs v4\+/);
     expect(hint).toMatch(/every other tool works/i);
-    expect(hint).toMatch(/only if the user wants interval habits/i);
+    expect(hint).toMatch(/only if the user wants a daily habit that starts on a later date/i);
+    // A v3 app already does `cadence` — the note must not claim it is missing.
+    expect(hint).not.toMatch(/interval habits/i);
+    expect(hint).not.toMatch(/needs v3\+/);
+  });
+
+  test("an app two versions behind gets one note naming both missing habit features", async () => {
+    mockHealthAnd404({ apiVersion: 2, minClientApiVersion: 1 });
+    const client = new KenotexClient({ token: "t" });
+    await client.health();
+    const hint = client.versionSkewHint();
+    expect(hint).toMatch(/cadence\` \(interval habits\) needs v3\+/);
+    expect(hint).toMatch(/start date.*needs v4\+/i);
+    expect(hint).toMatch(/every other tool works/i);
+    expect(hint).toMatch(/only if the user wants interval habits or a daily habit that starts on a later date/i);
   });
 
   test("matching versions produce no skew hint", async () => {

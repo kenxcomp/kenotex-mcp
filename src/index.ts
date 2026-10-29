@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   } else {
     // Two directions, two severities. A MCP this app refuses outright is a real
     // skew warning; an app one additive version behind is a note, not a defect —
-    // it only means `cadence` is unavailable, so it must not read as "your setup
+    // it only means the newest habit features are unavailable, so it must not read as "your setup
     // is broken, go update".
     const outdated = client.clientTooOldHint();
     if (outdated) {

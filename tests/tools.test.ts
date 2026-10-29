@@ -122,6 +122,18 @@ describe("habit tool definitions", () => {
     expect(byName("set_habit_check")).toMatch(/never in the future/i);
     expect(byName("list_habit_checks")).toMatch(/interval/i);
   });
+
+  test("daily start date (API v4) is described on create + read + check tools", () => {
+    const byName = (n: string) => defs.find((t) => t.name === n)?.description ?? "";
+    const createHabit = defs.find((t) => t.name === "create_habit");
+    const cadence = (createHabit?.inputSchema as any)?.properties?.cadence;
+    expect(cadence?.description).toMatch(/daily habit that starts that day/);
+    expect(cadence?.description).toMatch(/v4\+/);
+    expect(cadence?.properties?.startDate?.description).toMatch(/daily cadence.*first day/);
+    expect(byName("list_habits")).toMatch(/isStarted/);
+    expect(byName("get_habit")).toMatch(/isStarted/);
+    expect(byName("set_habit_check")).toMatch(/future start date.*422 on date/);
+  });
 });
 
 describe("todo tool handlers", () => {
@@ -383,6 +395,31 @@ describe("habit cadence version guard", () => {
     expect(sent[0]!.method).toBe("POST");
     expect(sent[0]!.url).toMatch(/\/v1\/habits$/);
     expect((sent[0]!.body as any).cadence).toEqual({ unit: "day", interval: 3 });
+  });
+
+  test("a daily cadence with a startDate is refused against a v3 app (it would start today)", async () => {
+    mockApp({ apiVersion: 3, minClientApiVersion: 1 });
+    const cadence = { unit: "day", interval: 1, startDate: "2099-01-01" };
+    await expect(handlers.create_habit!({ title: "拉伸", cadence })).rejects.toMatchObject({
+      code: "VERSION_SKEW",
+    });
+    await expect(handlers.update_habit!({ id: "h1", cadence })).rejects.toMatchObject({
+      code: "VERSION_SKEW",
+    });
+    expect(sent).toHaveLength(0);
+  });
+
+  test("a daily cadence with a startDate posts against a v4 app; an interval startDate still needs only v3", async () => {
+    mockApp({ apiVersion: 4, minClientApiVersion: 1 });
+    const daily = { unit: "day", interval: 1, startDate: "2099-01-01" };
+    await handlers.create_habit!({ title: "拉伸", cadence: daily });
+    expect(sent).toHaveLength(1);
+    expect((sent[0]!.body as any).cadence).toEqual(daily);
+    mockApp({ apiVersion: 3, minClientApiVersion: 1 });
+    const interval = { unit: "day", interval: 3, startDate: "2099-01-01" };
+    await handlers.create_habit!({ title: "浇花", cadence: interval });
+    expect(sent).toHaveLength(1);
+    expect((sent[0]!.body as any).cadence).toEqual(interval);
   });
 
   test("update_habit keeps cadence:null on the wire against a v3 app", async () => {
